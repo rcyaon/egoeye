@@ -94,10 +94,7 @@ def _report_rank(report):
 # actually needs it; measure the real distribution on the --limit 200 run.
 @app.function(secrets=[secret], timeout=900, retries=1, max_containers=100)
 def audit_one(row: dict) -> dict:
-    import numpy as np
     from eyekit import score_episode
-    def _sev(r):  # NaN-safe severity key
-        return r.failure_score if np.isfinite(r.failure_score) else -1.0
     try:
         wrists = load_wrist(row["zarr_path"])
         reports = {

@@ -631,13 +631,11 @@ class EgoSearch:
         else:
             ep["_scored"] = False
 
-        ann_lookup = {}
         if annotations_csv:
             try:
                 ann = pd.read_csv(annotations_csv, dtype={"episode_id": str})
                 if "text" in ann:
                     ann["text"] = ann["text"].fillna("").astype(str)
-                    ann_lookup = dict(zip(ann["episode_id"], ann["text"]))
                     ep = ep.merge(ann[["episode_id", "text"]], on="episode_id",
                                   how="left")
             except FileNotFoundError:

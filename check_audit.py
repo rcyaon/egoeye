@@ -8,7 +8,6 @@ each scale and every one of them is silent in the parquet.
 """
 
 import sys
-import numpy as np
 import pandas as pd
 
 HARD, SOFT = [], []

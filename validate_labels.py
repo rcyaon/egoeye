@@ -17,7 +17,6 @@ having been frozen on synthetic data.
 
 import sys
 
-import numpy as np
 import pandas as pd
 
 LABEL = r"_success|_failure|success$|failure$"

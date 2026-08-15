@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 
 from eyekit import confidence_trace
 import make_demo_figs
-from make_demo_figs import load, _r2_filesystem
+from make_demo_figs import load
 
 
 def _local_mp4_path(path: str) -> str:
