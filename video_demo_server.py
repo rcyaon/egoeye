@@ -659,7 +659,18 @@ def main():
     args = ap.parse_args()
 
     ep = pd.read_csv(args.episodes, dtype={"episode_id": str})
-    STATE["mp4_lookup"] = dict(zip(ep["episode_id"], ep.get("preview_mp4", "")))
+    # preview_mp4 is optional in the episodes CSV. If it's missing/blank, derive the
+    # R2 preview path from zarr_path (<...>.zarr -> <...>.mp4) so the viewer still
+    # gets video instead of silently showing "no preview video" for every episode.
+    _pv = ep["preview_mp4"] if "preview_mp4" in ep.columns else None
+    _zp = ep["zarr_path"] if "zarr_path" in ep.columns else None
+    def _mp4_for(i):
+        if _pv is not None and isinstance(_pv.iloc[i], str) and _pv.iloc[i]:
+            return _pv.iloc[i]
+        if _zp is not None and isinstance(_zp.iloc[i], str) and _zp.iloc[i].endswith(".zarr"):
+            return _zp.iloc[i][:-5] + ".mp4"
+        return ""
+    STATE["mp4_lookup"] = {ep["episode_id"].iloc[i]: _mp4_for(i) for i in range(len(ep))}
     STATE["zarr_lookup"] = dict(zip(ep["episode_id"], ep.get("zarr_path", "")))
     STATE["fps_lookup"] = dict(zip(ep["episode_id"], ep.get("fps", 30.0)))
     STATE["search"] = E.EgoSearch.build(
