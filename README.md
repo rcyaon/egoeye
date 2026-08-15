@@ -16,17 +16,16 @@ is exactly the data that poisons imitation learning.
 ## Contents
 
 - [What's an "eye diagram"?](#whats-an-eye-diagram-no-background-needed)
-  — the borrowed ideas explained for a general reader
-- [Setup](#setup) — credentials, the Modal secret, `episodes.csv`
+- [Setup](#setup)
 - [Usage](#usage) — every command, in the order you'd run them
 - [Quality-aware search](#quality-aware-search) — natural-language search that
   ranks on *what an episode is of* × *how cleanly it was done*
 - [Multimodal detector](#multimodal-detector) — wrist + head/gaze + hand
   aperture, and how it was validated without labels
-- [Files](#files) — what each module does
+- [Files](#files) 
 - [Thresholds, and why they sit where they do](#thresholds-and-why-they-sit-where-they-do)
 
-## What's an "eye diagram"? (no background needed)
+## What's an "eye diagram"? 
 
 The name and the method are borrowed from high-speed electronics. If you've not
 seen one before, here's the whole idea.
@@ -88,7 +87,7 @@ wobbles of a correction or a re-grasp.
 
 **One honest caveat**, covered in detail further down: on real data the rainflow
 channel turned out to be saturated and the impulse channel alone flags forceful
-*intentional* motion rather than failure. The multimodal detector below is the
+*intentional* motion rather than failure. The [multimodal detector](#multimodal-detector) below is the
 response to that.
 
 ## Setup
