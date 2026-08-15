@@ -92,12 +92,13 @@ def impulse_z(accel_mag: np.ndarray, fps: float, hp_win_s: float = 0.33):
 
 
 def detect_impulses(accel_mag: np.ndarray, fps: float, z_thresh: float = 10.0,
-                    min_sep_s: float = 0.3):
+                    min_sep_s: float = 0.3, adaptive_q: float = 99.7):
     """Frame indices of impulsive events (drops/collisions), grouped so one
     physical event = one detection. Threshold has huge margin on synthetic
     data (clean z_max ~5, drop z_max ~35+); verify it holds on real data."""
     z = impulse_z(accel_mag, fps)
-    hits = np.where(z > z_thresh)[0]
+    floor = max(float(z_thresh), float(np.percentile(z, adaptive_q)))
+    hits = np.where(z > floor)[0]
     events = []
     for h in hits:
         if not events or h - events[-1][-1] > min_sep_s * fps:
@@ -243,11 +244,17 @@ def score_episode(episode_id: str, wrist_xyz: np.ndarray, fps: float,
     """Full deterministic pipeline for one episode. Tune thresholds ONCE on a
     dev handful, then freeze — that's your defensibility story."""
     th = {
-        "z": 10.0,
-        "eye_open_min": 0.45,
-        "impulses_per_min_min": 1.2,
-        "min_impulses": 2,
-        "fail_score_min": 0.55,
+        "z": 18.0,
+        "impulse_min_sep_s": 0.8,
+        "impulse_adaptive_q": 99.7,
+        "eye_open_min": 0.30,
+        "impulses_per_min_min": 5.0,
+        "min_impulses": 3,
+        "fail_score_min": 0.49,
+        "impulses_per_min_low": 1.0,
+        "impulses_per_min_high": 4.0,
+        "rf_small_low": 0.78,
+        "rf_small_high": 0.95,
         **(thresholds or {}),
     }
     rep = EpisodeReport(episode_id=episode_id, n_frames=len(wrist_xyz))
@@ -256,7 +263,13 @@ def score_episode(episode_id: str, wrist_xyz: np.ndarray, fps: float,
     rep.nan_frac = float(np.isnan(xyz).any(axis=1).mean())
     speed, accel = kinematics(xyz, fps)
 
-    imp, _ = detect_impulses(accel, fps, z_thresh=th["z"])
+    imp, _ = detect_impulses(
+        accel,
+        fps,
+        z_thresh=th["z"],
+        min_sep_s=th["impulse_min_sep_s"],
+        adaptive_q=th["impulse_adaptive_q"],
+    )
     rep.n_impulses, rep.impulse_frames = len(imp), imp.tolist()
     dur_min = max(rep.duration_s / 60.0, 1e-9)
     rep.impulse_rate_per_min = float(rep.n_impulses / dur_min)
@@ -272,14 +285,17 @@ def score_episode(episode_id: str, wrist_xyz: np.ndarray, fps: float,
     # --- combine (weighted: impulses are the reliable channel, rainflow
     # secondary, eye smear tertiary — margins measured on synthetic data) ---
     w, s = [], []
-    w.append(0.6); s.append(min(rep.n_impulses / 1.0, 1.0))            # drops
+    imp_span = max(float(th["impulses_per_min_high"] - th["impulses_per_min_low"]), 1e-9)
+    imp_sev = np.clip((rep.impulse_rate_per_min - th["impulses_per_min_low"]) / imp_span, 0, 1)
+    w.append(0.75); s.append(float(imp_sev))                             # drops
     if np.isfinite(rep.rf_small_ratio):
-        w.append(0.25)
-        s.append(np.clip((rep.rf_small_ratio - 0.05) / 0.3, 0, 1))     # retries
+        rf_span = max(float(th["rf_small_high"] - th["rf_small_low"]), 1e-9)
+        w.append(0.20)
+        s.append(np.clip((rep.rf_small_ratio - th["rf_small_low"]) / rf_span, 0, 1))
     if np.isfinite(rep.eye_opening):
-        w.append(0.15)
+        w.append(0.05)
         s.append(np.clip((th["eye_open_min"] - rep.eye_opening)
-                         / th["eye_open_min"], 0, 1))                  # smear
+                         / max(th["eye_open_min"], 1e-9), 0, 1))      # smear
     rep.failure_score = float(np.dot(w, s) / np.sum(w)) if w else np.nan
 
     impulse_gate = (
