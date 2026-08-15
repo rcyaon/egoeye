@@ -35,6 +35,7 @@ import argparse
 import html as htmlmod
 import json
 import os
+import re
 import sys
 import threading
 
@@ -56,6 +57,12 @@ STATE: dict = {}
 _trace_cache: dict[str, dict] = {}
 _trace_lock = threading.Lock()
 DEFAULT_Q = "wash dishes cleanly, no drops"
+CHIP_QUERIES = [
+    ("wash dishes cleanly, no drops", "clean"),
+    ("wash dishes that were fumbled or dropped", "fumbled"),
+    ("washing a plate", "plate"),
+    ("rinsing a cup", "cup"),
+]
 
 
 def _r2_client():
@@ -187,7 +194,7 @@ def esc(s) -> str:
     return htmlmod.escape(str(s if s is not None else ""))
 
 
-def render_epirow(h: dict, rank: int, active: bool) -> str:
+def render_epirow(h: dict, rank: int, active: bool, href: str = None) -> str:
     task = esc(h["task"]).replace("_", " ")
     lab = esc(h["lab"])
     dur = f'{h["duration_s"]:.1f}s' if h.get("duration_s") else "—"
@@ -199,8 +206,9 @@ def render_epirow(h: dict, rank: int, active: bool) -> str:
                  f'<div class="bar suc{low}"><i style="width:{pct(h["success"])}%"></i></div>')
     unaud = "" if scored else '<span class="unaud">unaudited</span>'
     cls = "epirow active" if active else "epirow"
-    href = f'/?q={request.args.get("q", DEFAULT_Q)}&episode={h["episode_id"]}'
-    return (f'<a class="{cls}" href="{esc(href)}">'
+    if href is None:
+        href = f'/?q={request.args.get("q", DEFAULT_Q)}&episode={h["episode_id"]}'
+    return (f'<a class="{cls}" href="{esc(href)}" data-ep="{esc(h["episode_id"])}">'
             f'<div class="t"><span>{task}</span><span class="rank">#{rank}</span></div>'
             f'<div class="meta"><span>{lab}</span><span>{dur}</span>{unaud}</div>'
             f'<div class="bars">{bars}</div></a>')
@@ -259,7 +267,18 @@ def render_gate(gate) -> str:
 </div>"""
 
 
-def render_stage(h: dict) -> str:
+def stage_parts(h: dict, video_src: str = None) -> tuple:
+    """Build one episode's stage as (html, trace_json, eye_json) with the two
+    data blobs kept *out* of the markup.
+
+    The server glues them back into <script> tags (render_stage below); the
+    static export instead stashes every episode's three parts in one JS object
+    and swaps them in on click — <script> tags injected via innerHTML never
+    execute, so the data cannot ride along inside the html string there.
+
+    video_src overrides the /api/video/<id> route with a pre-signed R2 URL,
+    which is what makes the exported page work with no server behind it.
+    """
     task = esc(h["task"]).replace("_", " ")
     meta = f'{esc(h["episode_id"])} · {esc(h["lab"])} · {esc(h["embodiment"])} · ' \
            f'{h["duration_s"]:.1f}s' if h.get("duration_s") else esc(h["episode_id"])
@@ -269,7 +288,8 @@ def render_stage(h: dict) -> str:
                      ("success", h.get("success")), ("final", h["score"])]
     )
     if h.get("preview_mp4"):
-        video_html = f'<video id="m-video" controls preload="metadata" src="/api/video/{esc(h["episode_id"])}"></video>'
+        src = video_src or f'/api/video/{esc(h["episode_id"])}'
+        video_html = f'<video id="m-video" controls preload="metadata" src="{esc(src)}"></video>'
     else:
         video_html = '<div class="novideo">no preview video for this episode</div>'
 
@@ -277,6 +297,7 @@ def render_stage(h: dict) -> str:
     if "error" in analysis:
         dips_html = esc(analysis["error"])
         trace_json = "null"
+        eye_json = "null"
         eye_section = ""
         gate_section = ""
     else:
@@ -296,6 +317,7 @@ def render_stage(h: dict) -> str:
                                  "confirmed": confirmed_t})
 
         eye = analysis.get("eye")
+        eye_json = json.dumps(eye)
         if eye is None:
             eye_section = '<div class="chartwrap"><h3>eye diagram</h3><div class="dips">not enough motion cycles detected</div></div>'
         else:
@@ -308,12 +330,11 @@ def render_stage(h: dict) -> str:
 <div class="chartwrap">
   <h3>eye diagram <span class="capnote">{cap}</span></h3>
   <canvas id="m-eye-canvas"></canvas>
-</div>
-<script>var EYE = {json.dumps(eye)};</script>"""
+</div>"""
 
         gate_section = render_gate(gate)
 
-    return f"""
+    html = f"""
 <div class="stagehead"><div class="task">{task}</div><div class="id">{meta}</div></div>
 <div class="videowrap">{video_html}</div>
 <div class="chartwrap">
@@ -329,8 +350,13 @@ def render_stage(h: dict) -> str:
 {eye_section}
 <div class="scores">{scores}</div>
 <div class="txt">{esc(h.get("text", ""))}</div>
-<script>var TRACE = {trace_json};</script>
 """
+    return html, trace_json, eye_json
+
+
+def render_stage(h: dict) -> str:
+    html, trace_json, eye_json = stage_parts(h)
+    return f'{html}\n<script>var TRACE = {trace_json}; var EYE = {eye_json};</script>'
 
 
 @app.route("/")
@@ -358,16 +384,11 @@ def index():
 
     chips = "".join(
         f'<a class="chip" href="/?q={esc(cq)}">{esc(label)}</a>'
-        for cq, label in [
-            ("wash dishes cleanly, no drops", "clean"),
-            ("wash dishes that were fumbled or dropped", "fumbled"),
-            ("washing a plate", "plate"),
-            ("rinsing a cup", "cup"),
-        ]
+        for cq, label in CHIP_QUERIES
     )
 
     return Response(PAGE.format(
-        q=esc(q), chips=chips, resline=resline, rows=rows, stage=stage,
+        q=esc(q), chips=chips, resline=resline, rows=rows, stage=stage, extra_js="",
     ), mimetype="text/html")
 
 
@@ -622,7 +643,10 @@ function onTimeUpdate(){{
   }}
 }}
 
-(function init(){{
+// Named (not an IIFE) because the static export re-mounts a whole stage on
+// every episode click and has to re-run exactly this wiring against the new
+// DOM nodes. The server calls it once, at load, same as before.
+function bindStage(){{
   var video=document.getElementById("m-video");
   if(video) video.ontimeupdate=onTimeUpdate;
   var canvas=document.getElementById("m-canvas");
@@ -644,10 +668,156 @@ function onTimeUpdate(){{
   }}
   drawTrace();
   drawEye();
-}})();
+}}
+bindStage();
 window.addEventListener("resize",drawEye);
 </script>
+{extra_js}
 </body></html>"""
+
+
+def _slug(q: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", q.lower()).strip("-")[:40]
+
+
+def _presign(mp4_path: str, expires: int) -> str:
+    bucket, key = mp4_path.replace("s3://", "").split("/", 1)
+    return _r2_client().generate_presigned_url(
+        "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=expires,
+    )
+
+
+def _js(obj) -> str:
+    """JSON for embedding inside <script> — `</` broken up so a literal
+    </script> in any string can't close the tag early."""
+    return json.dumps(obj).replace("</", "<\\/")
+
+
+def export_static(out_path: str, queries: list, top: int, expires: int) -> None:
+    """Render the viewer to standalone HTML files that need no server.
+
+    Everything the live server computes per request is precomputed here: the
+    search ranking, each episode's confidence trace / eye diagram / gate, and
+    a pre-signed R2 URL per video. One file per query, chips linking between
+    them; inside a file, clicking an episode swaps the stage from an inline
+    JS object rather than navigating.
+
+    The pre-signed URLs are the expiry clock on the whole export — SigV4 caps
+    them at 7 days, after which the videos 403 and the page must be re-run.
+    """
+    # Search first, render second. A query that matches nothing produces no
+    # file, and a chip pointing at a file that was never written is a 404 in
+    # the middle of a demo — so the chip row is built from the queries that
+    # actually survive this pass, not from the ones that were requested.
+    ranked = []
+    for q, label in queries:
+        _, hits = STATE["search"].search(q, k=top, quality_weight=0.75)
+        if hits:
+            ranked.append((q, label, hits))
+        else:
+            print(f"[{label}] no results for {q!r} — dropped from the export")
+    if not ranked:
+        print("nothing to export")
+        return
+    queries = [(q, label) for q, label, _ in ranked]
+
+    base, ext = os.path.splitext(out_path)
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    # First query owns the given filename, so whatever the host serves as the
+    # landing page is the one the caller named.
+    names = {q: (os.path.basename(out_path) if i == 0
+                 else f"{os.path.basename(base)}--{_slug(q)}{ext}")
+             for i, (q, _) in enumerate(queries)}
+    chips = "".join(f'<a class="chip" href="{esc(names[q])}">{esc(label)}</a>'
+                    for q, label in queries)
+    query_files = {q.lower(): names[q] for q, _ in queries}
+
+    for q, label, hits in ranked:
+        print(f"\n[{label}] {q}")
+        mp4_lookup = STATE["mp4_lookup"]
+
+        episodes, ok = {}, []
+        for h in hits:
+            d = h.to_dict()
+            mp4 = mp4_lookup.get(h.episode_id)
+            d["preview_mp4"] = bool(mp4)
+            url = _presign(mp4, expires) if mp4 else None
+            try:
+                html, trace_json, eye_json = stage_parts(d, video_src=url)
+            except Exception as e:  # one bad zarr shouldn't sink the export
+                print(f"  ! {h.episode_id}: {e!r} — skipped")
+                continue
+            episodes[h.episode_id] = {
+                "html": html,
+                "trace": json.loads(trace_json),
+                "eye": json.loads(eye_json),
+            }
+            ok.append(d)
+            print(f"  #{d['rank']:>2} {h.episode_id} {'video' if mp4 else 'no video'}")
+
+        if not ok:
+            print(f"  no renderable episodes for {q!r} — skipping file")
+            continue
+
+        rows = "".join(render_epirow(d, d["rank"], i == 0, href="#")
+                       for i, d in enumerate(ok))
+        first = ok[0]["episode_id"]
+        extra_js = f"""<script>
+var TRACE=null, EYE=null;
+var EPISODES={_js(episodes)};
+var QUERY_FILES={_js(query_files)};
+
+function selectEpisode(id){{
+  var d=EPISODES[id];
+  if(!d) return;
+  document.getElementById("stage").innerHTML=d.html;
+  TRACE=d.trace; EYE=d.eye;
+  var rows=document.querySelectorAll(".epirow");
+  for(var i=0;i<rows.length;i++){{
+    rows[i].className = (rows[i].getAttribute("data-ep")===id) ? "epirow active" : "epirow";
+  }}
+  bindStage();
+}}
+
+var rows=document.querySelectorAll(".epirow");
+for(var i=0;i<rows.length;i++){{
+  rows[i].addEventListener("click",function(e){{
+    e.preventDefault();
+    selectEpisode(this.getAttribute("data-ep"));
+  }});
+}}
+
+// The ranking is precomputed per query, so a free-text search can only land
+// on a query that was actually exported; anything else says so out loud
+// rather than silently returning the page you are already on.
+var form=document.querySelector(".searchbox");
+if(form){{
+  form.addEventListener("submit",function(e){{
+    e.preventDefault();
+    var v=(form.querySelector("input").value||"").trim().toLowerCase();
+    var f=QUERY_FILES[v];
+    var rl=document.querySelector(".resline");
+    if(f){{ window.location.href=f; }}
+    else if(rl){{ rl.textContent="static export — only the preset queries above are available"; }}
+  }});
+}}
+
+selectEpisode({_js(first)});
+</script>"""
+
+        page = PAGE.format(
+            q=esc(q), chips=chips,
+            resline=f'{len(ok)} results for "{esc(q)}"',
+            rows=rows, stage='<div class="placeholder">loading…</div>',
+            extra_js=extra_js,
+        )
+        path = os.path.join(out_dir, names[q])
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(page)
+        print(f"  -> {path}  ({len(page) / 1e6:.1f} MB, {len(ok)} episodes)")
+
+    days = expires / 86400
+    print(f"\nvideo links expire in {days:.1f} day{'s' if days != 1 else ''} — re-run to refresh.")
 
 
 def main():
@@ -656,6 +826,14 @@ def main():
     ap.add_argument("--results", default="audit_washdishes_local.parquet")
     ap.add_argument("--annotations", default=None)
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--export", metavar="OUT.html",
+                    help="render standalone HTML (no server) instead of serving")
+    ap.add_argument("--top", type=int, default=12,
+                    help="episodes per query in --export (each costs one R2 zarr load)")
+    ap.add_argument("--expires", type=int, default=604800,
+                    help="seconds until the exported video links expire (SigV4 max 604800 = 7d)")
+    ap.add_argument("--query", action="append", metavar="Q",
+                    help="query to export; repeatable. Default: the four preset chips")
     args = ap.parse_args()
 
     ep = pd.read_csv(args.episodes, dtype={"episode_id": str})
@@ -677,6 +855,17 @@ def main():
         args.episodes, results_parquet=args.results,
         annotations_csv=args.annotations, verbose=True,
     )
+
+    if args.export:
+        queries = ([(q, _slug(q)[:18]) for q in args.query] if args.query
+                   else list(CHIP_QUERIES))
+        export_static(args.export, queries, args.top, args.expires)
+        # s3fs/aiohttp tear their event loop down noisily at interpreter exit
+        # ("attached to a different loop"), which would hand a nonzero status
+        # to whatever runs this. The files are written and flushed by now, so
+        # leave before that runs.
+        sys.stdout.flush()
+        os._exit(0)
 
     print(f"\n  http://127.0.0.1:{args.port}\n")
     app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
