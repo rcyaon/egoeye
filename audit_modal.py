@@ -35,8 +35,8 @@ WRIST_JOINT = 0                      # MANO joint 0 = wrist
 LEFT_KEY = WRIST_KEY.replace("right.", "left.")  # left-only episodes (human_left_arm)
 
 
-def load_wrist(zarr_path: str):
-    """Return (T,3) wrist positions for one episode.
+def load_wrists(zarr_path: str):
+    """Return {side: (T,3)} wrist positions for one episode (both hands if present).
 
     Three things the raw zarr will bite you on:
       1. R2, not S3 — s3fs needs the Cloudflare endpoint and region "auto".
@@ -64,27 +64,40 @@ def load_wrist(zarr_path: str):
         zarr.storage.FsspecStore(fs, path=zarr_path.replace("s3://", "").rstrip("/")),
         mode="r",
     )
+    n = int(root.attrs.get("total_frames", 0)) or None
 
-    key = WRIST_KEY if WRIST_KEY in root else LEFT_KEY  # human_left_arm has left.* only
-    arr = np.asarray(root[key])
-
-    if arr.ndim == 2 and arr.shape[1] > 3 and arr.shape[1] % 3 == 0:
-        arr = arr.reshape(len(arr), -1, 3)   # (T, 63) -> (T, 21, 3)
-    if arr.ndim == 3:
-        arr = arr[:, WRIST_JOINT, :]
-
-    n = int(root.attrs.get("total_frames", len(arr)))
-    return arr[:n]
+    # BIMANUAL: return BOTH wrists (one R2 open). A wash_dishes failure is often a
+    # left-hand event (scrub hand), so scoring right-only misses it.
+    out = {}
+    for side in ("right", "left"):
+        key = f"{side}.obs_keypoints"
+        if key not in root:
+            continue
+        arr = np.asarray(root[key])
+        if arr.ndim == 2 and arr.shape[1] > 3 and arr.shape[1] % 3 == 0:
+            arr = arr.reshape(len(arr), -1, 3)   # (T, 63) -> (T, 21, 3)
+        if arr.ndim == 3:
+            arr = arr[:, WRIST_JOINT, :]
+        out[side] = arr[:n] if n else arr
+    if not out:
+        raise KeyError("no obs_keypoints (right/left) in store")
+    return out
 
 
 @app.function(secrets=[secret], timeout=300, retries=1, max_containers=100)
 def audit_one(row: dict) -> dict:
+    import numpy as np
     from eyekit import score_episode
+    def _sev(r):  # NaN-safe severity key
+        return r.failure_score if np.isfinite(r.failure_score) else -1.0
     try:
-        xyz = load_wrist(row["zarr_path"])
-        rep = score_episode(str(row["episode_id"]), xyz,
-                            fps=float(row.get("fps", 30.0)))
-        out = rep.to_dict(); out["error"] = ""
+        wrists = load_wrists(row["zarr_path"])
+        fps, eid = float(row.get("fps", 30.0)), str(row["episode_id"])
+        reps = {side: score_episode(eid, xyz, fps=fps) for side, xyz in wrists.items()}
+        worst = max(reps, key=lambda s: _sev(reps[s]))   # episode = the worse hand
+        out = reps[worst].to_dict()
+        out["scored_hand"] = worst
+        out["error"] = ""
         return out
     except Exception as e:                    # never let one episode kill the run
         return {"episode_id": str(row.get("episode_id")), "error": repr(e)}
