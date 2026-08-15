@@ -2,6 +2,7 @@
 # internal dataset object paths; not for a public repo
 episodes.csv
 annotations.csv
+episodes_*.csv
 
 # planning doc
 modal_hack.pdf
@@ -12,6 +13,7 @@ audit_results.parquet
 explore.png
 eye_diagrams.png
 confidence_meter.png
+prevalence_by_source.png
 
 # python / os
 __pycache__/
