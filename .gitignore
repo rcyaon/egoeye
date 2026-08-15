@@ -3,6 +3,8 @@
 episodes.csv
 annotations.csv
 episodes_*.csv
+# derived from episodes.csv, carries the same zarr object paths
+search_targets.csv
 
 # planning doc
 modal_hack.pdf
@@ -14,6 +16,8 @@ explore.png
 eye_diagrams.png
 confidence_meter.png
 prevalence_by_source.png
+# 3MB, one command to rebuild: python egosearch.py --demo --html demo_search.html
+demo_search.html
 
 # python / os
 __pycache__/

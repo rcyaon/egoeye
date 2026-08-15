@@ -76,6 +76,7 @@ def _payload(index: E.EgoSearch, runs, quality_weight: float) -> dict:
             # deletes a whole class of engine-parity drift
             full.append(base + [
                 r2(row.get("_signal")), r2(row.get("_signal_raw")),
+                r2(row.get("_success")), r2(row.get("_success_raw")),
                 r2(row.get("failure_score")), r2(row.get("eye_opening")),
                 r2(row.get("rf_small_ratio")), r2(row.get("mask_violation_p90")),
                 r2(row.get("nan_frac")), r2(row.get("n_impulses"), 0),
@@ -88,7 +89,18 @@ def _payload(index: E.EgoSearch, runs, quality_weight: float) -> dict:
                  for q, hits in runs]
 
     n_scored = int(scored_mask.sum())
+    aud = df[scored_mask]
+    dur_corr = float("nan")
+    if len(aud) >= 20 and "n_impulses" in aud:
+        d = pd.to_numeric(aud["duration_s"], errors="coerce")
+        i = pd.to_numeric(aud["n_impulses"], errors="coerce")
+        if i.nunique() > 1:
+            dur_corr = float(d.corr(i))
     return {
+        "successScale": index.success_scale,
+        "rateRef": (round(index.rate_ref, 2)
+                    if np.isfinite(index.rate_ref) else None),
+        "durCorr": (round(dur_corr, 2) if np.isfinite(dur_corr) else None),
         "docs": docs, "labs": labs, "embs": embs,
         "lite": lite, "full": full,
         "reference": reference,
@@ -563,11 +575,13 @@ for(const r of DATA.lite)
   EPS.push({id:r[0],doc:r[1],lab:DATA.labs[r[2]],emb:DATA.embs[r[3]],dur:r[4],
             task:r[5],scored:false,sig:null,sigRaw:null,suc:null,imp:[]});
 for(const r of DATA.full){
-  const e={id:r[0],doc:r[1],lab:DATA.labs[r[2]],emb:DATA.embs[r[3]],dur:r[4],
-           task:r[5],scored:true,sig:r[6],sigRaw:r[7],fs:r[8],eye:r[9],rf:r[10],
-           mask:r[11],nan:r[12],nimp:r[13],imp:r[14]||[]};
-  e.suc = (e.fs===null||e.fs===undefined) ? null : 1-clamp(e.fs);
-  EPS.push(e);
+  // signal and success both arrive precomputed: one is a percentile within the
+  // audited corpus, the other is normalised against a corpus-derived impulse
+  // rate — neither is reconstructible from the subset shipped to the browser
+  EPS.push({id:r[0],doc:r[1],lab:DATA.labs[r[2]],emb:DATA.embs[r[3]],dur:r[4],
+            task:r[5],scored:true,sig:r[6],sigRaw:r[7],suc:r[8],sucRaw:r[9],
+            fs:r[10],eye:r[11],rf:r[12],mask:r[13],nan:r[14],nimp:r[15],
+            imp:r[16]||[]});
 }
 
 function fuse(sem,sig,suc,intent,w){
@@ -745,10 +759,23 @@ function renderDetail(hit){
           ${chan("eye opening",e.eye)}${chan("rainflow small-cycle",e.rf)}
           ${chan("mask violation p90",e.mask)}${chan("tracking NaN",e.nan)}
           ${chan("raw composite",e.sigRaw)}
-          ${chan("failure score",e.fs)}
         </div>
         <span class="eyecap">signal is the raw composite's percentile within the
           audited corpus — the absolute mappings saturate on real data.</span>
+      </div>
+      <div class="dsec"><h3>failure evidence</h3>
+        <div class="chan">
+          ${chan("impulses",e.nimp===null?null:e.nimp)}
+          ${chan("per minute",(e.nimp===null||!e.dur)?null:e.nimp/(e.dur/60))}
+          ${chan("detector failure_score",e.fs)}
+          ${chan("success (1 - that)",e.sucRaw)}
+        </div>
+        <span class="eyecap">${DATA.successScale==="rate"
+          ? `success is ranked on impulses per minute against a reference of
+             ${DATA.rateRef} /min — the raw count is partly a measure of episode
+             length (corr ${DATA.durCorr} here), so ranking on it sorts by duration.`
+          : `success is the detector's raw score; the impulse count it is built on
+             carries a length bias.`}</span>
       </div>
       <div class="dsec"><h3>impulse events</h3>
         <div class="timeline">${ticks}</div>

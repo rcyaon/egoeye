@@ -56,7 +56,7 @@ Every hit carries three scores:
 |---|---|---|
 | semantic | BM25 over task text + annotations, domain synonyms | what it's of |
 | signal | eye opening, rainflow, mask violations, tracking dropout | how clean the trace is |
-| success | 1 − `failure_score` | no discrete drop/collision event |
+| success | impulses **per minute** vs a corpus-derived reference | no drop/collision event |
 
 `final = semantic × quality^w`. Multiplicative on purpose: quality re-orders
 relevance, it never substitutes for it, so a pristine but irrelevant episode
@@ -68,7 +68,19 @@ parser would reintroduce the nondeterminism this whole project argues against.
 Runs against `episodes.csv` alone (quality columns just read `—`); the audit
 parquet lights up the quality half. **No embedding model, no LLM, no network.**
 
-Two things worth knowing before quoting numbers from it:
+Three things worth knowing before quoting numbers from it:
+
+- **The success channel is length-normalised, and it has to be.** Ranking on
+  raw `failure_score` sorted by episode duration: `corr(duration, n_impulses)
+  = 0.66` on the audited episodes, and "clean examples of washing dishes"
+  returned a mean of 9.0s against 34.6s for "wash dishes that were fumbled"
+  — a 3.8× gap that was measuring length, not quality (same artifact B found
+  as 16%→97% flag rate, and C normalises with failures/minute). The ranking
+  divides by duration; the gap closes to 1.4×. `--success-scale raw` restores
+  the old behaviour, and it should become the default again once B's
+  recalibrated threshold makes the impulse count mean something on its own.
+  `failure_score` and `failure_flag` are untouched — this is the ranking's
+  channel, not a second detector.
 
 - **`rf_small_ratio` is saturated on real data** — 0.61–0.95 across the first
   50 real episodes, against eyekit's `[0.05, 0.35]` mapping. It discriminates

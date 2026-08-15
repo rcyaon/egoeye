@@ -16,8 +16,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-from egosearch import (EgoSearch, parse_query, stem, signal_score,
-                       success_score, tokenize)
+from egosearch import (EgoSearch, event_rate_scores, parse_query, stem,
+                       signal_score, success_score, tokenize)
 
 FAILS = []
 
@@ -111,6 +111,29 @@ check(np.isfinite(signal_score(partial)) and signal_score(partial) > 0.8,
 check(not np.isfinite(signal_score({"failure_score": 0.1})),
       "no channels at all -> NaN, never 0",
       "'unmeasured' must not read as 'terrible'")
+
+# ----------------------------------------------------------------------
+# C2. length bias — the defect real data exposed
+# ----------------------------------------------------------------------
+print("\n== length normalisation ==")
+# Same evidence, 8x different density: the detector's raw failure_score calls
+# both of these maximally failed, because it counts impulses instead of rating
+# them. Ranking must not.
+bias = pd.DataFrame({
+    "n_impulses":  [1.0, 1.0, 2.0, 0.0, 0.0],
+    "duration_s":  [6.0, 90.0, 90.0, 6.0, 90.0],
+    "failure_score": [1.0, 1.0, 0.95, 0.02, 0.02],
+})
+rate, ref = event_rate_scores(bias)
+check(np.isfinite(ref) and rate[1] > rate[0],
+      "a long episode with one impulse beats a short one with one impulse",
+      f"90s -> {rate[1]:.2f} vs 6s -> {rate[0]:.2f} (ref {ref:.1f}/min)")
+check(rate[3] == 1.0 and rate[4] == 1.0,
+      "zero impulses scores a clean 1.00 at any duration",
+      "length must not penalise an episode with no evidence against it")
+check(rate[2] > rate[0],
+      "two impulses over 90s still beats one over 6s",
+      f"{rate[2]:.2f} vs {rate[0]:.2f} — density, not count")
 
 # ----------------------------------------------------------------------
 # D. ranking on a synthetic corpus with known answers
@@ -229,6 +252,22 @@ else:
           all("dish" in h.task.lower() for h in hits),
           "lab filter + negated failure word on the real corpus",
           f"{hits[0].task} / {hits[0].lab}" if hits else "no hits")
+
+    if os.path.exists("audit_results.parquet"):
+        # the regression that started this: rankings sorted by episode length
+        r = EgoSearch.build("episodes.csv", "audit_results.parquet", None,
+                            scope="all", verbose=False)
+        durs = {}
+        for label, query in [("clean", "clean examples of washing dishes"),
+                             ("fumbled", "wash dishes episodes that were fumbled")]:
+            _q, hs = r.search(query, k=10)
+            d = [h.duration_s for h in hs if h.scored and np.isfinite(h.duration_s)]
+            durs[label] = float(np.mean(d)) if d else float("nan")
+        ratio = max(durs.values()) / max(min(durs.values()), 1e-9)
+        check(ratio < 2.5,
+              "clean and fumbled results have comparable durations",
+              f"clean {durs['clean']:.1f}s vs fumbled {durs['fumbled']:.1f}s "
+              f"({ratio:.1f}x) — >2.5x means the length bias is back")
 
     if results:
         q, hits = real.search("wash dishes that were fumbled", k=10)

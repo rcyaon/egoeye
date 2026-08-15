@@ -437,6 +437,65 @@ def success_scores(df: pd.DataFrame) -> np.ndarray:
     return 1.0 - np.clip(fs, 0, 1)
 
 
+def event_rate_scores(df: pd.DataFrame, ref: float | None = None
+                      ) -> tuple[np.ndarray, float]:
+    """Length-normalised success: 1 - (impulses per minute / reference rate).
+
+    THE BUG THIS FIXES. failure_score is 60% weighted on raw impulse *count*,
+    and impulses fire at a roughly constant background rate — so the count is
+    mostly a measure of how long the episode is. On the audited episodes here
+    corr(duration, n_impulses) = 0.66, and it showed up directly in the
+    rankings: "clean examples of washing dishes" returned a mean duration of
+    9.0s while "wash dishes that were fumbled" returned 34.6s. The search was
+    sorting by length and calling it quality. (Person C's prevalence work hit
+    the same artifact from the other side, which is why the headline number is
+    reported per minute rather than per episode.)
+
+    Dividing by duration removes it: a 90s episode with one impulse (0.7/min)
+    is now cleaner than a 6s episode with one impulse (10/min), which is the
+    correct direction and the opposite of what the raw count says.
+
+    The reference rate is the 90th percentile of the non-zero rates in this
+    corpus rather than a constant, so it recalibrates itself against whatever
+    the detector's thresholds are doing that hour instead of hard-coding a
+    number that a re-freeze would silently invalidate.
+
+    This does NOT redefine the detector. failure_score and failure_flag are
+    untouched and still reported; this is the ranking's own quality channel,
+    and it inherits whatever Person B lands.
+    """
+    n = len(df)
+    if "n_impulses" not in df:
+        return np.full(n, np.nan), float("nan")
+    imp = pd.to_numeric(df["n_impulses"], errors="coerce").to_numpy(dtype=float)
+    minutes = pd.to_numeric(df.get("duration_s"), errors="coerce").to_numpy(
+        dtype=float) / 60.0
+    rate = np.full(n, np.nan)
+    ok = np.isfinite(imp) & np.isfinite(minutes) & (minutes > 0)
+    rate[ok] = imp[ok] / minutes[ok]
+
+    if ref is None or not np.isfinite(ref) or ref <= 0:
+        nz = rate[np.isfinite(rate) & (rate > 0)]
+        if len(nz) >= 10:
+            ref = float(np.percentile(nz, 90))
+        elif len(nz) >= 3:
+            # too few points for a percentile — span the observed range instead,
+            # which still orders episodes by density even on a 50-episode
+            # smoke-test parquet. Provisional: it moves as the audit grows.
+            ref = float(nz.max())
+        else:
+            ref = float("nan")
+    if not np.isfinite(ref) or ref <= 0:
+        # nothing to normalise against: fall back to the detector's own rule,
+        # length bias and all, rather than inventing a reference
+        return np.full(n, np.nan), float("nan")
+
+    out = np.full(n, np.nan)
+    good = np.isfinite(rate)
+    out[good] = 1.0 - np.clip(rate[good] / ref, 0, 1)
+    return out, ref
+
+
 def signal_score(row) -> float:
     """Single-row convenience wrapper (tests, notebooks)."""
     return float(signal_scores(pd.DataFrame([dict(row)]))[0])
@@ -471,6 +530,7 @@ class Hit:
     signal: float
     signal_raw: float
     success: float
+    success_raw: float
     score: float
     scored: bool                      # False = audit has not reached it yet
     n_impulses: float = float("nan")
@@ -494,9 +554,11 @@ class EgoSearch:
     channel is what orders them. That is the thesis of the feature in one line.
     """
 
-    def __init__(self, df: pd.DataFrame, signal_scale: str = "percentile"):
+    def __init__(self, df: pd.DataFrame, signal_scale: str = "percentile",
+                 success_scale: str = "rate"):
         self.df = df.reset_index(drop=True)
         self.signal_scale = signal_scale
+        self.success_scale = success_scale
 
         # Quality is a property of the episode, not of the query — compute it
         # once here rather than per search over the matching subset.
@@ -504,7 +566,12 @@ class EgoSearch:
         self.df["_signal"] = (calibrate(self.df["_signal_raw"].to_numpy())
                               if signal_scale == "percentile"
                               else np.clip(self.df["_signal_raw"].to_numpy(), 0, 1))
-        self.df["_success"] = success_scores(self.df)
+        self.df["_success_raw"] = success_scores(self.df)
+        rate, self.rate_ref = event_rate_scores(self.df)
+        self.df["_success_rate"] = rate
+        use_rate = success_scale == "rate" and np.isfinite(self.rate_ref)
+        self.success_scale = "rate" if use_rate else "raw"
+        self.df["_success"] = rate if use_rate else self.df["_success_raw"]
 
         docs = self.df["_doc"].astype(str)
         uniq, inverse = np.unique(docs.to_numpy(), return_inverse=True)
@@ -537,7 +604,8 @@ class EgoSearch:
     def build(cls, episodes_csv: str, results_parquet: str | None = None,
               annotations_csv: str | None = None, scope: str = "auto",
               verbose: bool = True,
-              signal_scale: str = "percentile") -> "EgoSearch":
+              signal_scale: str = "percentile",
+              success_scale: str = "rate") -> "EgoSearch":
         ep = pd.read_csv(episodes_csv, dtype={"episode_id": str})
         ep["task"] = ep["task"].fillna("").astype(str)
         ep["lab"] = ep["lab"].fillna("").astype(str)
@@ -595,7 +663,8 @@ class EgoSearch:
                   f"distinct texts | {n_scored:,} with audit scores "
                   f"({n_scored / max(len(ep), 1):.1%})", file=sys.stderr)
             _warn_saturated(ep)
-        return cls(ep, signal_scale=signal_scale)
+            _warn_length_bias(ep)
+        return cls(ep, signal_scale=signal_scale, success_scale=success_scale)
 
     # -- retrieval ----------------------------------------------------
     def _score_docs(self, terms: list[str]) -> np.ndarray:
@@ -732,6 +801,7 @@ class EgoSearch:
                 signal=float(sig[j]),
                 signal_raw=_num(row.get("_signal_raw")),
                 success=float(suc[j]),
+                success_raw=_num(row.get("_success_raw")),
                 score=float(final[j]),
                 scored=bool(row["_scored"]),
                 n_impulses=_num(row.get("n_impulses")),
@@ -790,6 +860,24 @@ def _warn_saturated(ep: pd.DataFrame) -> None:
                   f"discriminates nothing. Signal falls back to percentile "
                   f"ranking; tell whoever owns eyekit's thresholds.",
                   file=sys.stderr)
+
+
+def _warn_length_bias(ep: pd.DataFrame) -> None:
+    """Report how much of the impulse count is just episode duration."""
+    scored = ep[ep["_scored"]]
+    if len(scored) < 20 or "n_impulses" not in scored:
+        return
+    d = pd.to_numeric(scored["duration_s"], errors="coerce")
+    i = pd.to_numeric(scored["n_impulses"], errors="coerce")
+    ok = d.notna() & i.notna() & (d > 0)
+    if ok.sum() < 20 or i[ok].nunique() < 2:
+        return
+    r = float(d[ok].corr(i[ok]))
+    if np.isfinite(r) and r > 0.4:
+        print(f"NOTE: corr(duration, n_impulses) = {r:.2f} on audited episodes "
+              f"— impulse count is partly a measure of episode length. Ranking "
+              f"uses impulses per minute instead (--success-scale raw to "
+              f"disable).", file=sys.stderr)
 
 
 def _impulse_times(row) -> list:
@@ -881,6 +969,9 @@ def main(argv=None):
                     default="percentile",
                     help="percentile = rank within the audited corpus (robust "
                          "to saturated channels); absolute = fixed thresholds")
+    ap.add_argument("--success-scale", choices=["rate", "raw"], default="rate",
+                    help="rate = impulses per minute (removes the length bias "
+                         "in the raw impulse count); raw = 1 - failure_score")
     ap.add_argument("--json", metavar="PATH", help="write hits as JSON")
     ap.add_argument("--html", metavar="PATH", help="write the demo page")
     ap.add_argument("--demo", action="store_true",
@@ -896,7 +987,8 @@ def main(argv=None):
                    if args.annotations and os.path.exists(args.annotations) else None)
 
     index = EgoSearch.build(args.episodes, results, annotations, scope="all",
-                            signal_scale=args.signal_scale)
+                            signal_scale=args.signal_scale,
+                            success_scale=args.success_scale)
 
     queries = [" ".join(args.query)] if args.query else []
     if args.demo or not queries:
