@@ -16,6 +16,7 @@ explore.png
 eye_diagrams.png
 confidence_meter.png
 prevalence_by_source.png
+filmstrip.png
 # 3MB, one command to rebuild: python egosearch.py --demo --html demo_search.html
 demo_search.html
 
