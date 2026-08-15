@@ -1,16 +1,30 @@
-# egoeye — signal-integrity analysis of human demonstrations
+# Egoeye: Verifying human demonstrations with signal-integrity tricks 
 
 Deterministic failure detection + curation for EgoVerse episodes. No training,
 no GPU, no LLM judge. Wrist kinematics → impulse detection (drops), rainflow
 cycle decomposition (retries), eye-diagram mask testing (behavioral consistency).
 
 Those three names are borrowed from signal integrity, fatigue engineering and
-machine diagnostics. **If they mean nothing to you, read the next section —
-it explains them from scratch, no background assumed.**
+machine diagnostics. **If they mean nothing to you, start with
+[What's an "eye diagram"?](#whats-an-eye-diagram-no-background-needed) —
+it explains all three from scratch, no background assumed.**
 
 **Thesis:** most curation filters bad *recordings* (blur, dedup); this filters
 bad *demonstrations* — visually perfect episodes where the human fumbled, which
 is exactly the data that poisons imitation learning.
+
+## Contents
+
+- [What's an "eye diagram"?](#whats-an-eye-diagram-no-background-needed)
+  — the borrowed ideas explained for a general reader
+- [Setup](#setup) — credentials, the Modal secret, `episodes.csv`
+- [Usage](#usage) — every command, in the order you'd run them
+- [Quality-aware search](#quality-aware-search) — natural-language search that
+  ranks on *what an episode is of* × *how cleanly it was done*
+- [Multimodal detector](#multimodal-detector) — wrist + head/gaze + hand
+  aperture, and how it was validated without labels
+- [Files](#files) — what each module does
+- [Thresholds, and why they sit where they do](#thresholds-and-why-they-sit-where-they-do)
 
 ## What's an "eye diagram"? (no background needed)
 
