@@ -1,3 +1,5 @@
+***Requested summary slide in `egoeye_slide.pptx.pdf`***
+
 # Egoeye: Verifying human demonstrations with signal-integrity tricks 
 
 Deterministic failure detection + curation for EgoVerse episodes. No training,
