@@ -30,6 +30,20 @@ A soap squirt or disposal dump has the wrist impulse **without** the gaze snap +
 - hand aperture: spread/extent of the 21 MANO keypoints; a release = sudden increase
 - validate the same way we did: watch the new top-10, count real failures
 
+## UPDATE — multimodal tested, also no lift (2026 hackathon)
+Prototyped the gate above (`scratchpad/test_multimodal.py`): wrist impulse AND a nearby
+head-angular-jerk **or** hand-aperture spike, on the same 15 labeled clips.
+**Result: precision 2/13 — identical to wrist-only and to impulse+correction.**
+Head jerk and hand-aperture spikes fire near ~every impulse because dishwashing scenes
+are constantly active in *every* channel. Three approaches now tested, all ~2/13:
+wrist-impulse · impulse+correction · wrist+head+hand.
+
+**Conclusion:** the failure event (an object visibly falling) is not cleanly present in the
+available motion/pose channels for cluttered tasks — it's semantic/visual. Deterministic
+kinematic detection has a real ceiling here. This is the honest, defensible result.
+Multimodal *done carefully* (release-specific hand-open, gaze-locked-to-object) is real
+future work, not a hackathon-timeframe win.
+
 ## Artifacts to resume from
 - Labeled clips + verdicts: `~/Documents/Hackathon/clips/`, `clips_recal/` (+ scorecards)
 - wash_dishes scores: `audit_washdishes.parquet`, `audit_wd_recal.parquet`
