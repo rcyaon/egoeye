@@ -52,6 +52,9 @@ def load_wrist(zarr_path: str):
     import zarr
 
     endpoint = os.environ.get("R2_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3")
+    # Cloudflare R2 does NOT accept an STS session token — passing X-Amz-Security-Token
+    # makes every request 400 ('Bad Request'). The R2 access-key/secret stand alone.
+    # (~/.egoverse_env ships an R2_SESSION_TOKEN, but it is for S3, not R2 — do not send it.)
     fs = s3fs.S3FileSystem(
         key=os.environ.get("R2_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID"),
         secret=os.environ.get("R2_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY"),
