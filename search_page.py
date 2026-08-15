@@ -118,9 +118,17 @@ def _payload(index: E.EgoSearch, runs, quality_weight: float) -> dict:
 
 
 def write_page(path: str, index: E.EgoSearch, runs, quality_weight: float,
-               source: str = "") -> None:
+               source: str = "", synthetic: bool | None = None) -> None:
     data = _payload(index, runs, quality_weight)
     data["source"] = source
+    # make_mock_parquet.py prints "these numbers are INVENTED. Never put them
+    # on a slide" and then the file gets passed around like any other parquet.
+    # Filename is the only marker it leaves, so key off it and let the caller
+    # override when a real run is named something unlucky.
+    data["synthetic"] = synthetic if synthetic is not None else (
+        "mock" in source.lower() or "fake" in source.lower()
+        or "synthetic" in source.lower() or not source
+        or source == "no audit parquet")
     html = TEMPLATE.replace("__PAYLOAD__", json.dumps(data, separators=(",", ":")))
     with open(path, "w") as f:
         f.write(html)
@@ -188,6 +196,20 @@ TEMPLATE = r"""<title>egoeye Search Console</title>
   .thesis{font-family:var(--sans);font-size:16px;color:var(--ink-2);
           max-width:66ch;margin:0}
   .thesis b{color:var(--ink);font-weight:620}
+  /* Provenance is not a footnote. This page is built to be screenshotted, and
+     a screenshot of invented quality numbers is the single worst artefact this
+     project could produce — so when the scores are synthetic, the page says so
+     above the fold, in the warning colour, before anything else is read. */
+  .prov{display:flex;gap:11px;align-items:flex-start;padding:11px 13px;
+        border-radius:3px;font-size:12.5px;line-height:1.5;border:1px solid var(--rule-2);
+        background:var(--panel);color:var(--ink-2)}
+  .prov .dot{width:7px;height:7px;border-radius:50%;background:currentColor;
+             flex:none;margin-top:6px}
+  .prov b{color:var(--ink);font-weight:650}
+  .prov.mock{border-color:var(--warn);background:var(--warn-soft);color:var(--warn)}
+  .prov.mock b{color:var(--warn)}
+  .prov.real{border-color:var(--good);background:var(--good-soft);color:var(--good)}
+  .prov.real b{color:var(--good)}
   .coverage{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
   .stat{background:var(--panel);border:1px solid var(--rule);border-radius:3px;
         padding:5px 10px;font-size:11.5px;color:var(--ink-2);
@@ -752,6 +774,24 @@ $("#coverage").innerHTML=[
   ["audited by egoeye",stats.audited.toLocaleString()],
   ["shipped in this page",stats.shipped.toLocaleString()],
 ].map(([k,v])=>`<span class="stat">${k} <b>${v}</b></span>`).join("");
+
+const prov=$("#provenance");
+if(DATA.synthetic){
+  prov.className="prov mock";
+  prov.innerHTML=`<span class="dot"></span><span><b>The quality numbers on this page are
+    invented.</b> Retrieval runs on the real ${stats.episodes_total.toLocaleString()}-episode
+    catalogue, but signal and success come from <code>${esc(DATA.source)}</code> — a synthetic
+    parquet built to develop against while the fan-out ran. Nothing here is a measurement.
+    Rebuild with <code>--results audit_results.parquet</code> before this is shown to anyone.</span>`;
+} else {
+  prov.className="prov real";
+  prov.innerHTML=`<span class="dot"></span><span><b>Real scores.</b> Signal and success come
+    from <code>${esc(DATA.source)}</code> — ${stats.audited.toLocaleString()} episodes measured
+    on Modal from their R2 keypoints. The remaining
+    ${(stats.episodes_total-stats.audited).toLocaleString()} are indexed for retrieval and
+    marked <b>unaudited</b>: they carry no quality evidence and the ranking does not pretend
+    otherwise.</span>`;
+}
 
 $("#examples").innerHTML=DATA.reference.map(r=>
   `<button class="ex" data-q="${esc(r.q)}">${esc(r.q)}</button>`).join("");
