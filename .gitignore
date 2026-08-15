@@ -20,6 +20,9 @@ filmstrip.png
 # 3MB, one command to rebuild: python egosearch.py --demo --html demo_search.html
 demo_search.html
 
+# video_demo_server.py's on-disk cache of downloaded preview MP4s
+.video_cache/
+
 # python / os
 __pycache__/
 *.pyc

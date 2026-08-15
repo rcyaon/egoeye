@@ -250,6 +250,15 @@ checks in `NEXT_DIRECTION.md`.
 - `test_synthetic.py` — ground-truth smoke test (`python test_synthetic.py` → PASS)
 - `egosearch.py` — quality-aware natural-language search (library + CLI)
 - `search_page.py` — renders the search demo page; engine-parity checked in-browser
+- `video_demo_server.py` — live local Flask alternative to `search_page.py` for
+  presenting: episode-list sidebar + real preview MP4 (streamed from R2, cached
+  to `.video_cache/` on first click) + confidence trace and eye diagram synced
+  to video playback via `<canvas>`. Fully server-rendered, zero client-side
+  `fetch()` — search and episode selection are plain GET navigations
+  (`/?q=...&episode=...`), after XHR silently hung in one browser environment
+  (likely local security software) while direct navigation worked every time.
+  `python video_demo_server.py --episodes episodes_washdishes.csv --results
+  audit_washdishes_local.parquet` then open `http://127.0.0.1:8080`.
 - `test_search.py` — 36 checks on parsing, channels and ranking (`→ PASS`)
 - `make_search_targets.py` / `validate_labels.py` — scoped audit manifest + the
   free-ground-truth check
