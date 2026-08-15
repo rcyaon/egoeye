@@ -99,7 +99,15 @@ Three things worth knowing before quoting numbers from it:
 - `explore_episode.py` — hour-0 schema discovery + go/no-go plots
 - `audit_modal.py` — parallel dataset-wide audit on Modal
 - `validate.py` — weak-label agreement + precision@10 gallery
-- `make_demo_figs.py` — eye diagrams + confidence meter for the slide
+- `make_demo_figs.py` — eye diagrams + confidence meter for the slide (reads local
+  zarrs or R2 `s3://` paths)
+- `make_filmstrip.py` — preview-MP4 frames laid over the confidence trace, aligned
+  to timestamp — the actual photographed demo moment
+- `export_annotations.py` — annotations.csv from `segments[].label` (real per-clip
+  text, e.g. "drop orange bowl...") rather than just task_description
+- `local_audit.py` — same scorer as `audit_modal.py`, run sequentially without
+  Modal; good for a few hundred episodes when you want real numbers without a
+  fan-out (e.g. to feed `egosearch.py --demo` with populated signal/success)
 - `test_synthetic.py` — ground-truth smoke test (`python test_synthetic.py` → PASS)
 - `egosearch.py` — quality-aware natural-language search (library + CLI)
 - `search_page.py` — renders the search demo page; engine-parity checked in-browser
