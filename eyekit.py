@@ -2,7 +2,8 @@
 eyekit — signal-integrity-style analysis of human demonstration kinematics.
 
 Pipeline: wrist xyz -> speed/accel -> (a) impulsive-event detection
-(kurtosis / crest factor), (b) rainflow cycle decomposition,
+(high-pass acceleration residual z-scored against MAD), (b) rainflow cycle
+decomposition,
 (c) motion-cycle segmentation -> eye diagram -> eye-opening score.
 
 Everything is deterministic. No training, no GPU.
@@ -71,7 +72,7 @@ def smooth(x: np.ndarray, fps: float, win_s: float = 0.25):
     return savgol_filter(x, w, polyorder=2)
 
 # ----------------------------------------------------------------------
-# 2. Impulsive events (drops / collisions): sliding kurtosis + crest factor
+# 2. Impulsive events (drops / collisions): high-pass residual z-scored vs MAD
 #    (envelope-analysis playbook from rotating-machinery diagnostics)
 # ----------------------------------------------------------------------
 
@@ -230,6 +231,8 @@ class EpisodeReport:
     eye_opening: float = np.nan
     eye_n_cycles: int = 0
     mask_violation_p90: float = np.nan
+    impulse_zmax: float = np.nan       # peak impulse z-score — for threshold calibration
+    impulses_per_min: float = np.nan   # length-normalized impulse rate (the defensible metric)
     failure_flag: bool = False
     failure_score: float = np.nan  # 0 clean .. 1 confident failure
     def to_dict(self):
@@ -255,7 +258,7 @@ def score_episode(episode_id: str, wrist_xyz: np.ndarray, fps: float,
     rep.nan_frac = float(np.isnan(xyz).any(axis=1).mean())
     speed, accel = kinematics(xyz, fps)
 
-    imp, _ = detect_impulses(accel, fps, z_thresh=th["z"])
+    imp, zsig = detect_impulses(accel, fps, z_thresh=th["z"])
     rep.n_impulses, rep.impulse_frames = len(imp), imp.tolist()
     dur_min = max(rep.duration_s / 60.0, 1e-9)
     rep.impulse_rate_per_min = float(rep.n_impulses / dur_min)
