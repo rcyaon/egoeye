@@ -131,10 +131,24 @@ def api_video(episode_id):
 
     local_path = os.path.join(CACHE_DIR, f"{episode_id}.mp4")
     if not os.path.exists(local_path):
-        bucket, key = mp4_path.replace("s3://", "").split("/", 1)
         tmp = local_path + ".part"
-        _r2_client().download_file(bucket, key, tmp)
-        os.replace(tmp, local_path)
+        # R2 preview naming isn't uniform across labs (<id>.mp4 vs <id>_video.mp4);
+        # try the given path first, then the _video variant before giving up.
+        candidates = [mp4_path]
+        if mp4_path.endswith(".mp4") and not mp4_path.endswith("_video.mp4"):
+            candidates.append(mp4_path[:-4] + "_video.mp4")
+        last_err = None
+        for cand in candidates:
+            try:
+                bucket, key = cand.replace("s3://", "").split("/", 1)
+                _r2_client().download_file(bucket, key, tmp)
+                os.replace(tmp, local_path)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+        if last_err is not None:
+            return f"video fetch failed: {last_err}", 502
     return send_file(local_path, mimetype="video/mp4", conditional=True)
 
 
@@ -530,7 +544,18 @@ def main():
     args = ap.parse_args()
 
     ep = pd.read_csv(args.episodes, dtype={"episode_id": str})
-    STATE["mp4_lookup"] = dict(zip(ep["episode_id"], ep.get("preview_mp4", "")))
+    # preview_mp4 is optional in the episodes CSV. If it's missing/blank, derive the
+    # R2 preview path from zarr_path (<...>.zarr -> <...>.mp4) so the viewer still
+    # gets video instead of silently showing "no preview video" for every episode.
+    _pv = ep["preview_mp4"] if "preview_mp4" in ep.columns else None
+    _zp = ep["zarr_path"] if "zarr_path" in ep.columns else None
+    def _mp4_for(i):
+        if _pv is not None and isinstance(_pv.iloc[i], str) and _pv.iloc[i]:
+            return _pv.iloc[i]
+        if _zp is not None and isinstance(_zp.iloc[i], str) and _zp.iloc[i].endswith(".zarr"):
+            return _zp.iloc[i][:-5] + ".mp4"
+        return ""
+    STATE["mp4_lookup"] = {ep["episode_id"].iloc[i]: _mp4_for(i) for i in range(len(ep))}
     STATE["zarr_lookup"] = dict(zip(ep["episode_id"], ep.get("zarr_path", "")))
     STATE["fps_lookup"] = dict(zip(ep["episode_id"], ep.get("fps", 30.0)))
     STATE["search"] = E.EgoSearch.build(
