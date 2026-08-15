@@ -40,20 +40,19 @@ import threading
 
 import numpy as np
 import pandas as pd
-from flask import Flask, Response, request, send_file
+from flask import Flask, Response, redirect, request
 
 sys.path.insert(0, os.path.expanduser("~/EgoVerse"))
 
+import bodykit as bk
 import egosearch as E
+from egoload import load_episode
 from eyekit import (clean_trajectory, confidence_trace, eye_matrix,
                     eye_metrics, kinematics, segment_cycles)
-from make_demo_figs import load as load_wrist
 
 app = Flask(__name__)
 
 STATE: dict = {}
-CACHE_DIR = os.path.join(os.path.dirname(__file__), ".video_cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
 _trace_cache: dict[str, dict] = {}
 _trace_lock = threading.Lock()
 DEFAULT_Q = "wash dishes cleanly, no drops"
@@ -70,9 +69,41 @@ def _r2_client():
     )
 
 
+def _multimodal_gate(ep: dict, fps: float) -> dict:
+    """Run bodykit's wrist+head+hand gate on every hand in the episode and
+    combine (summed counts, unioned confirmed frames — a drop is one-handed,
+    same convention as audit_multimodal.py's audit_one)."""
+    per_hand = {}
+    for hand, kp in ep["hands"].items():
+        per_hand[hand] = bk.score_episode_multimodal(
+            ep["episode_id"], kp, ep["head"], fps, hand=hand,
+            K=ep["K"], image_wh=ep["image_wh"],
+        )
+    if not per_hand:
+        return None
+
+    confirmed_t = sorted(
+        float(f) / fps for r in per_hand.values() for f in r.confirmed_frames
+    )
+    lifts = [r.lift_head for r in per_hand.values() if r.lift_head == r.lift_head]
+    lifts += [r.lift_release for r in per_hand.values() if r.lift_release == r.lift_release]
+    return {
+        "n_impulses_world": sum(r.n_impulses_world for r in per_hand.values()),
+        "n_impulses_hand": sum(r.n_impulses_hand for r in per_hand.values()),
+        "n_head_events": sum(r.n_head_events for r in per_hand.values()),
+        "n_release_events": sum(r.n_release_events for r in per_hand.values()),
+        "n_confirmed": sum(r.n_confirmed for r in per_hand.values()),
+        "confirmed_t": confirmed_t,
+        "failure_flag": any(r.failure_flag for r in per_hand.values()),
+        "failure_score": max((r.failure_score for r in per_hand.values()), default=0.0),
+        "mean_lift": (sum(lifts) / len(lifts)) if lifts else None,
+        "hands": sorted(per_hand),
+    }
+
+
 def _analysis_for(episode_id: str) -> dict:
-    """Confidence trace + eye diagram, computed from one zarr load (R2 fetch
-    is the expensive part — don't pay for it twice for two charts)."""
+    """Confidence trace + eye diagram + multimodal gate, from one zarr load
+    (R2 fetch is the expensive part — don't pay for it three times)."""
     with _trace_lock:
         cached = _trace_cache.get(episode_id)
     if cached is not None:
@@ -83,7 +114,12 @@ def _analysis_for(episode_id: str) -> dict:
         return {"error": "no zarr_path for this episode"}
 
     fps = float(STATE["fps_lookup"].get(episode_id, 30.0))
-    xyz = load_wrist(zarr_path, None, 0)
+    ep = load_episode(zarr_path)
+    fps = float(ep["fps"] or fps)
+    hand = "right" if "right" in ep["hands"] else next(iter(ep["hands"]), None)
+    if hand is None:
+        return {"error": "no hand keypoints in this episode"}
+    xyz = clean_trajectory(ep["hands"][hand][:, bk.WRIST, :])
 
     t, conf = confidence_trace(xyz, fps)
     dips = []
@@ -100,7 +136,7 @@ def _analysis_for(episode_id: str) -> dict:
         else:
             i += 1
 
-    speed, _ = kinematics(clean_trajectory(xyz), fps)
+    speed, _ = kinematics(xyz, fps)
     segs = segment_cycles(speed, fps)
     M = eye_matrix(speed, segs)
     if M is not None and M.shape[0] >= 1:
@@ -114,9 +150,14 @@ def _analysis_for(episode_id: str) -> dict:
     else:
         eye = None
 
+    try:
+        gate = _multimodal_gate(ep, fps)
+    except Exception as e:
+        gate = {"error": repr(e)}
+
     payload = {
         "t": t.round(2).tolist(), "conf": conf.round(3).tolist(), "dips": dips,
-        "eye": eye,
+        "eye": eye, "gate": gate,
     }
     with _trace_lock:
         _trace_cache[episode_id] = payload
@@ -125,17 +166,21 @@ def _analysis_for(episode_id: str) -> dict:
 
 @app.route("/api/video/<episode_id>")
 def api_video(episode_id):
+    """302 to a short-lived R2 presigned URL — the browser streams straight
+    from R2, this function never touches the video bytes. Regenerated fresh
+    on every request (cheap: one signing call, no network I/O) rather than
+    embedded directly in the page, so a cached/stale page never ships an
+    expired link. This is the Vercel-compatible swap for the old
+    download-to-local-disk-then-send_file version: serverless functions
+    don't have a persistent local filesystem to cache into."""
     mp4_path = STATE["mp4_lookup"].get(episode_id)
     if not mp4_path:
         return "no preview_mp4 for this episode", 404
-
-    local_path = os.path.join(CACHE_DIR, f"{episode_id}.mp4")
-    if not os.path.exists(local_path):
-        bucket, key = mp4_path.replace("s3://", "").split("/", 1)
-        tmp = local_path + ".part"
-        _r2_client().download_file(bucket, key, tmp)
-        os.replace(tmp, local_path)
-    return send_file(local_path, mimetype="video/mp4", conditional=True)
+    bucket, key = mp4_path.replace("s3://", "").split("/", 1)
+    url = _r2_client().generate_presigned_url(
+        "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=3600,
+    )
+    return redirect(url, code=302)
 
 
 def esc(s) -> str:
@@ -173,6 +218,47 @@ def fmt(v) -> str:
     return f"{float(v):.2f}"
 
 
+def render_gate(gate) -> str:
+    if gate is None:
+        return ('<div class="chartwrap"><h3>multimodal gate</h3>'
+                '<div class="dips">missing head or hand keypoints for this episode</div></div>')
+    if "error" in gate:
+        return (f'<div class="chartwrap"><h3>multimodal gate</h3>'
+                f'<div class="dips">{esc(gate["error"])}</div></div>')
+
+    stats = [
+        ("world impulses", gate["n_impulses_world"]),
+        ("after body veto", gate["n_impulses_hand"]),
+        ("head/gaze events", gate["n_head_events"]),
+        ("hand-release events", gate["n_release_events"]),
+    ]
+    bars = "".join(
+        f'<div class="gstat"><div class="gk">{k}</div><div class="gv">{v}</div></div>'
+        for k, v in stats
+    )
+    bars += (f'<div class="gstat confirmed"><div class="gk">CONFIRMED</div>'
+             f'<div class="gv">{gate["n_confirmed"]}</div></div>')
+
+    if gate["n_confirmed"]:
+        verdict = (f'<b>{gate["n_confirmed"]} event{"s" if gate["n_confirmed"] > 1 else ""} '
+                   f'confirmed</b> — a wrist impulse (survives the body-motion veto) joined '
+                   f'within 0.5s by BOTH a head/gaze event AND a hand-release event')
+    else:
+        verdict = ('no gate-confirmed events — any raw wrist impulses here were not '
+                   'corroborated by gaze + release, so the wrist-only detector\'s reading '
+                   'alone is not trusted')
+    lift = gate.get("mean_lift")
+    if lift is not None and lift == lift:
+        verdict += f' · mean channel lift over chance ≈ {lift:.1f}x'
+
+    return f"""
+<div class="chartwrap">
+  <h3>multimodal gate <span class="capnote">wrist × head/gaze × hand-release, AND-gated — bodykit.py</span></h3>
+  <div class="gatebar">{bars}</div>
+  <div class="dips">{verdict}</div>
+</div>"""
+
+
 def render_stage(h: dict) -> str:
     task = esc(h["task"]).replace("_", " ")
     meta = f'{esc(h["episode_id"])} · {esc(h["lab"])} · {esc(h["embodiment"])} · ' \
@@ -192,6 +278,7 @@ def render_stage(h: dict) -> str:
         dips_html = esc(analysis["error"])
         trace_json = "null"
         eye_section = ""
+        gate_section = ""
     else:
         n = len(analysis["dips"])
         if n:
@@ -202,7 +289,11 @@ def render_stage(h: dict) -> str:
             dips_html = f'<b>{n} dip{"s" if n > 1 else ""}</b> detected — click a dip or the chart to jump: {chips}'
         else:
             dips_html = "no confidence dips detected in this episode"
-        trace_json = json.dumps({"t": analysis["t"], "conf": analysis["conf"], "dips": analysis["dips"]})
+
+        gate = analysis.get("gate")
+        confirmed_t = gate["confirmed_t"] if gate and "error" not in gate else []
+        trace_json = json.dumps({"t": analysis["t"], "conf": analysis["conf"], "dips": analysis["dips"],
+                                 "confirmed": confirmed_t})
 
         eye = analysis.get("eye")
         if eye is None:
@@ -220,6 +311,8 @@ def render_stage(h: dict) -> str:
 </div>
 <script>var EYE = {json.dumps(eye)};</script>"""
 
+        gate_section = render_gate(gate)
+
     return f"""
 <div class="stagehead"><div class="task">{task}</div><div class="id">{meta}</div></div>
 <div class="videowrap">{video_html}</div>
@@ -227,10 +320,12 @@ def render_stage(h: dict) -> str:
   <div class="chartlegend">
     <span class="lk"><span class="dot" style="background:#4CC9E8"></span>confidence <b id="lv-conf">—</b></span>
     <span class="lk"><span class="dot" style="background:#F0616B"></span>nearest dip <b id="lv-dip">—</b></span>
+    <span class="lk"><span class="dot" style="background:#FFC857"></span>gate-confirmed <b id="lv-gate">—</b></span>
   </div>
   <canvas id="m-canvas"></canvas>
 </div>
 <div class="dips">{dips_html}</div>
+{gate_section}
 {eye_section}
 <div class="scores">{scores}</div>
 <div class="txt">{esc(h.get("text", ""))}</div>
@@ -350,6 +445,13 @@ canvas{{width:100%;height:130px;display:block;cursor:pointer;background:var(--su
 .dips{{padding:8px 26px 0;font-size:11.5px;color:var(--ink-3);font-family:var(--mono);flex:none}}
 .dips b{{color:var(--bad)}}
 
+.gatebar{{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:8px}}
+.gstat{{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:8px 10px}}
+.gstat.confirmed{{border-color:#FFC857;background:rgba(255,200,87,0.08)}}
+.gstat .gk{{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)}}
+.gstat .gv{{font-size:17px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:2px}}
+.gstat.confirmed .gv{{color:#FFC857}}
+
 .scores{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:18px 26px;flex:none}}
 .sc{{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:10px 12px}}
 .sc .k{{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}}
@@ -411,6 +513,20 @@ function drawTrace(){{
   ctx.fillStyle="#F0616B";
   (TRACE.dips||[]).forEach(function(d){{
     ctx.beginPath(); ctx.arc(x(d.t),y(d.conf),4,0,Math.PI*2); ctx.fill();
+  }});
+
+  // gate-confirmed events: wrist impulse + head/gaze + hand-release all lined
+  // up — drawn as gold triangles above the trace, distinct from the softer
+  // (unconfirmed) red dips, since these are the ones the gate actually trusts
+  ctx.fillStyle="#FFC857";
+  (TRACE.confirmed||[]).forEach(function(ct2){{
+    var px=x(ct2), py=10;
+    ctx.beginPath();
+    ctx.moveTo(px,py-6); ctx.lineTo(px-6,py+5); ctx.lineTo(px+6,py+5);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle=cssVar("--rule"); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(px,py+5); ctx.lineTo(px,h); ctx.setLineDash([2,3]);
+    ctx.stroke(); ctx.setLineDash([]);
   }});
 
   var video=document.getElementById("m-video");
@@ -490,6 +606,19 @@ function onTimeUpdate(){{
       if(dd<bd){{ bd=dd; nearest=TRACE.dips[k]; }}
     }}
     lvDip.textContent=nearest.t.toFixed(1)+"s";
+  }}
+  var lvGate=document.getElementById("lv-gate");
+  if(lvGate){{
+    if(TRACE.confirmed && TRACE.confirmed.length){{
+      var bg=1e9, ng=TRACE.confirmed[0];
+      for(var m=0;m<TRACE.confirmed.length;m++){{
+        var dg=Math.abs(TRACE.confirmed[m]-ct);
+        if(dg<bg){{ bg=dg; ng=TRACE.confirmed[m]; }}
+      }}
+      lvGate.textContent=ng.toFixed(1)+"s";
+    }} else {{
+      lvGate.textContent="none";
+    }}
   }}
 }}
 
