@@ -221,8 +221,10 @@ def eye_metrics(M: np.ndarray):
 class EpisodeReport:
     episode_id: str
     n_frames: int = 0
+    duration_s: float = np.nan
     nan_frac: float = np.nan
     n_impulses: int = 0
+    impulse_rate_per_min: float = np.nan
     impulse_frames: list = field(default_factory=list)
     rf_small_ratio: float = np.nan
     rf_n_cycles: float = np.nan
@@ -242,16 +244,24 @@ def score_episode(episode_id: str, wrist_xyz: np.ndarray, fps: float,
                   thresholds: dict | None = None) -> EpisodeReport:
     """Full deterministic pipeline for one episode. Tune thresholds ONCE on a
     dev handful, then freeze — that's your defensibility story."""
-    th = {"z": 10.0, "eye_open_min": 0.45, **(thresholds or {})}
+    th = {
+        "z": 10.0,
+        "eye_open_min": 0.45,
+        "impulses_per_min_min": 1.2,
+        "min_impulses": 2,
+        "fail_score_min": 0.55,
+        **(thresholds or {}),
+    }
     rep = EpisodeReport(episode_id=episode_id, n_frames=len(wrist_xyz))
+    rep.duration_s = float(rep.n_frames / max(float(fps), 1e-9))
     xyz = clean_trajectory(wrist_xyz)
     rep.nan_frac = float(np.isnan(xyz).any(axis=1).mean())
     speed, accel = kinematics(xyz, fps)
 
     imp, zsig = detect_impulses(accel, fps, z_thresh=th["z"])
     rep.n_impulses, rep.impulse_frames = len(imp), imp.tolist()
-    rep.impulse_zmax = float(np.nanmax(zsig)) if len(zsig) else np.nan
-    rep.impulses_per_min = rep.n_impulses / (len(wrist_xyz) / fps / 60.0 + 1e-9)
+    dur_min = max(rep.duration_s / 60.0, 1e-9)
+    rep.impulse_rate_per_min = float(rep.n_impulses / dur_min)
 
     rf = rainflow_features(speed)
     rep.rf_small_ratio, rep.rf_n_cycles = rf["rf_small_ratio"], rf["rf_n_cycles"]
@@ -273,7 +283,12 @@ def score_episode(episode_id: str, wrist_xyz: np.ndarray, fps: float,
         s.append(np.clip((th["eye_open_min"] - rep.eye_opening)
                          / th["eye_open_min"], 0, 1))                  # smear
     rep.failure_score = float(np.dot(w, s) / np.sum(w)) if w else np.nan
-    rep.failure_flag = bool(rep.n_impulses >= 1 or rep.failure_score >= 0.5)
+
+    impulse_gate = (
+        rep.n_impulses >= int(th["min_impulses"])
+        and rep.impulse_rate_per_min >= float(th["impulses_per_min_min"])
+    )
+    rep.failure_flag = bool(impulse_gate or rep.failure_score >= float(th["fail_score_min"]))
     return rep
 
 
