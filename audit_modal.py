@@ -14,7 +14,18 @@ import modal
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("numpy", "scipy", "pandas", "rainflow", "zarr", "s3fs", "pyarrow")
+    .pip_install(
+        "numpy",
+        "scipy",
+        "pandas",
+        "rainflow",
+        "zarr",
+        "pyarrow",
+        # Keep the fsspec/s3fs/aiobotocore stack on a known-stable line.
+        "fsspec==2024.6.1",
+        "s3fs==2024.6.1",
+        "aiobotocore==2.13.1",
+    )
     .add_local_file("eyekit.py", remote_path="/root/eyekit.py")
 )
 app = modal.App("egoeye-audit", image=image)
@@ -122,7 +133,7 @@ def audit_one(row: dict) -> dict:
             mean_score = sum(hand_scores) / len(hand_scores)
             agg_score = 0.65 * max_score + 0.35 * mean_score
             out["failure_score"] = float(agg_score)
-            out["failure_flag"] = bool(agg_score >= 0.60)
+            out["failure_flag"] = bool(agg_score >= 0.65)
             out["is_bimanual_scored"] = True
         else:
             out["is_bimanual_scored"] = False
