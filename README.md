@@ -1,5 +1,6 @@
 # Deliverables
 * Requested summary slide in `egoeye_slide.pptx.pdf`
+<img width="2672" height="1556" alt="image" src="https://github.com/user-attachments/assets/c4764581-4278-4ad5-a736-7542ee3fb4bb" />
 <img width="2668" height="1558" alt="image" src="https://github.com/user-attachments/assets/e768ae77-8b13-48a5-a4cb-310e2369ff01" />
 
 
