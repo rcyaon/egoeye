@@ -43,6 +43,45 @@ survive unchanged.
 - **Track 3:** tagged episodes + prevalence audit + confidence meter (all three deliverables from one parquet)
 - **Track 1:** failure tags = drop list; prevalence audit = validation report; "optimal subset = maximally free of failure demonstrations"
 
+## Quality-aware search (deliverable 6)
+
+    python egosearch.py "find successful demonstrations of placing a cup into a drawer"
+    python egosearch.py --demo --results audit_results.parquet --html demo_search.html
+
+A text index answers *what an episode is of*. The audit answers *whether the
+human did it cleanly*. Neither is a training-set filter alone; joined, they are.
+Every hit carries three scores:
+
+| score | source | meaning |
+|---|---|---|
+| semantic | BM25 over task text + annotations, domain synonyms | what it's of |
+| signal | eye opening, rainflow, mask violations, tracking dropout | how clean the trace is |
+| success | 1 − `failure_score` | no discrete drop/collision event |
+
+`final = semantic × quality^w`. Multiplicative on purpose: quality re-orders
+relevance, it never substitutes for it, so a pristine but irrelevant episode
+can't surface. `w=0` is the ablation (plain semantic search) and it's a slider
+on the demo page. Query parsing is rule-based — intent (`successful` /
+`fumbled` / `without dropping`), lab, embodiment, duration — because an LLM
+parser would reintroduce the nondeterminism this whole project argues against.
+
+Runs against `episodes.csv` alone (quality columns just read `—`); the audit
+parquet lights up the quality half. **No embedding model, no LLM, no network.**
+
+Two things worth knowing before quoting numbers from it:
+
+- **`rf_small_ratio` is saturated on real data** — 0.61–0.95 across the first
+  50 real episodes, against eyekit's `[0.05, 0.35]` mapping. It discriminates
+  nothing and puts a constant 0.25 floor under every real `failure_score`.
+  `egosearch.py` warns when it detects this and percentile-ranks the signal
+  channel to compensate; the actual fix belongs in `eyekit.py`.
+- **93 episodes carry free ground truth** in their task names
+  (`bag_groceries_success`, `cup_on_saucer_success`). All human-embodiment ones
+  are `_success` — every `_failure` in the catalogue is robot teleop — so they
+  measure the false-positive rate, not accuracy. `make_search_targets.py`
+  scopes an audit run over them plus the flagship cup/drawer family;
+  `validate_labels.py` scores it.
+
 ## Files
 - `eyekit.py` — core library (all the math, heavily commented with the why)
 - `explore_episode.py` — hour-0 schema discovery + go/no-go plots
@@ -50,6 +89,11 @@ survive unchanged.
 - `validate.py` — weak-label agreement + precision@10 gallery
 - `make_demo_figs.py` — eye diagrams + confidence meter for the slide
 - `test_synthetic.py` — ground-truth smoke test (`python test_synthetic.py` → PASS)
+- `egosearch.py` — quality-aware natural-language search (library + CLI)
+- `search_page.py` — renders the search demo page; engine-parity checked in-browser
+- `test_search.py` — 36 checks on parsing, channels and ranking (`→ PASS`)
+- `make_search_targets.py` / `validate_labels.py` — scoped audit manifest + the
+  free-ground-truth check
 
 ## Known thresholds to defend under questioning
 - impulse `z_thresh=10`: clean synthetic maxes at ~5, drops hit 30–50 (huge margin; re-verify on 3 real episodes)
