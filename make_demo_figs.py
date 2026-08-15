@@ -18,6 +18,9 @@ from eyekit import (clean_trajectory, kinematics, segment_cycles,
 def load(path, key, joint):
     import zarr
     arr = np.asarray(zarr.open(path, mode="r")[key])
+    # obs_keypoints ship FLAT (T, 63) — reshape to (T, 21, 3) before joint select.
+    if arr.ndim == 2 and arr.shape[1] > 3 and arr.shape[1] % 3 == 0:
+        arr = arr.reshape(len(arr), -1, 3)
     return arr[:, joint, :] if arr.ndim == 3 else arr
 
 def plot_eye(ax, xyz, fps, title):

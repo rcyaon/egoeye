@@ -2,8 +2,7 @@
 # internal dataset object paths; not for a public repo
 episodes.csv
 annotations.csv
-# derived from episodes.csv, carries the same zarr object paths
-search_targets.csv
+episodes_*.csv
 
 # planning doc
 modal_hack.pdf
@@ -14,8 +13,7 @@ audit_results.parquet
 explore.png
 eye_diagrams.png
 confidence_meter.png
-# 3MB, one command to rebuild: python egosearch.py --demo --html demo_search.html
-demo_search.html
+prevalence_by_source.png
 
 # python / os
 __pycache__/
