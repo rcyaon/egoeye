@@ -69,79 +69,33 @@ Three design points that are load-bearing:
 - **The body frame is a veto, not a gate partner.** "Was that the hand or the
   whole person moving" costs no coincidence budget.
 
-## 3. What it measures
+## Channels already in every episode's zarr (unused so far)
+- `obs_head_pose` (7) — head/gaze proxy
+- `left/right.obs_keypoints` (63 = 21×3 MANO) — full hand pose / **aperture** (we only used joint 0)
+- `left/right.obs_ee_pose`, `left/right.obs_wrist_pose` (7)
 
-Validation without labels uses a **circular-shift null**: shift a supporting
-channel by a random offset inside its own episode, which preserves its event
-count and burst structure exactly and destroys only its alignment. Then
-`enrichment = confirmations(real) / confirmations(shifted)`. A uniform-random
-null cannot do this — it under-counts coincidences for bursty channels and
-reports lift where there is none.
+## Proposed gate for whoever picks this up
+`failure = wrist impulse  AND  (head-pose angular-jerk spike  OR  hand-aperture jump)  within ~1s`
+- head angular velocity: quaternion deltas of `obs_head_pose`
+- hand aperture: spread/extent of the 21 MANO keypoints; a release = sudden increase
+- validate the same way we did: watch the new top-10, count real failures
 
-| split | size | impulses | confirmed | null | enrichment | flag rate |
-|---|---|---|---|---|---|---|
-| wash_dishes, all (tuned on) | 400 eps / 133 min | 99 | 14 | 2.4 | **5.96×** (z=6.0) | 3.0% |
-| wash_dishes, held-out half | 200 eps / 63 min | 44 | 8 | 1.5 | **5.25×** (z=4.8) | 3.5% |
-| **fold_clothes, never tuned on** | 243 eps / 112 min | 110 | 10 | 1.6 | **6.45×** (z=6.6) | 3.3% |
+## UPDATE — multimodal tested, also no lift (2026 hackathon)
+Prototyped the gate above (`scratchpad/test_multimodal.py`): wrist impulse AND a nearby
+head-angular-jerk **or** hand-aperture spike, on the same 15 labeled clips.
+**Result: precision 2/13 — identical to wrist-only and to impulse+correction.**
+Head jerk and hand-aperture spikes fire near ~every impulse because dishwashing scenes
+are constantly active in *every* channel. Three approaches now tested, all ~2/13:
+wrist-impulse · impulse+correction · wrist+head+hand.
 
-(Minutes are of video. Both hands are scored separately, so that is twice as
-many episode-hand traces — 265 min for the first row.)
+**Conclusion:** the failure event (an object visibly falling) is not cleanly present in the
+available motion/pose channels for cluttered tasks — it's semantic/visual. Deterministic
+kinematic detection has a real ceiling here. This is the honest, defensible result.
+Multimodal *done carefully* (release-specific hand-open, gaze-locked-to-object) is real
+future work, not a hackathon-timeframe win.
 
-Independently, the lag profile — coincidence rate as a function of time offset —
-peaks sharply at τ=0 and decays inside ~0.5 s, on channel pairs that share no
-inputs. That is genuine event-locking, not two busy channels overlapping.
-
-Flag rate goes **23% (wrist-only) → ~3%**, and the ~3% is stable across two
-tasks and both halves of the tuning task.
-
-## 4. What this does NOT yet establish — read before quoting a number
-
-**The gate finds co-timed impulse + release + gaze events. Nobody has yet
-confirmed those are failures.** The specific worry, visible in the first
-filmstrips: a *deliberate set-down* also involves contact, a hand opening and
-a gaze shift. One top call sits in a segment annotated "place bowl in cabinet",
-which may well be a clean placement. Enrichment over a shuffle control proves
-the co-timing is real; it says nothing about what the co-timed thing *is*.
-
-So: **do not report ~3% as a failure-prevalence number yet.** It is the rate of
-confirmed release-with-impact events.
-
-## 5. The next job, and the tool for it
-
-`make_event_filmstrip.py` renders each flagged event as frames either side of it
-with the tracked hand drawn on, above the three channel traces that produced the
-call, plus the annotated segment text. It exists because adjudicating a 0.2 s
-event by watching a 15 s clip is the slow step in precision@10.
-
-    set -a; . ~/.egoverse_env; set +a
-    python make_event_filmstrip.py --task wash_dishes --top 10 --scan 250
-
-Score each strip Y/N → precision@10 for the multimodal gate, directly comparable
-to the 1/10 the wrist-only detector got. That single number decides whether this
-is a detector or just a well-controlled coincidence statistic.
-
-If the failures turn out to be dominated by deliberate placements, the next
-discriminator to try is what distinguishes a place from a drop: a placement
-decelerates before contact and the hand withdraws calmly, a drop does not
-decelerate and is followed by a fast re-grab toward the release point. Test it
-the same way — enrichment against the shuffle null first, then filmstrips.
-
-## 6. Running it at scale
-
-    modal run audit_multimodal.py --episodes episodes.csv --task wash_dishes --limit 50
-    modal run audit_multimodal.py --episodes episodes.csv --task wash_dishes
-
-Smoke-tested at 40 episodes, 0 errors. It runs the circular-shift control as a
-second fan-out by default and prints real vs shifted side by side —
-**report the two together or the prevalence number means nothing.**
-`--min-frames 200` skips clips too short to survive the 1 s edge guard.
-
-## 7. Files
-
-- `bodykit.py` — the multimodal channels, the gate, the null. All conventions
-  documented at the top with how each was verified.
-- `egoload.py` — one loader for every channel (head, both hands, intrinsics,
-  annotations, images), R2 handshake and the zero-padding fix in one place.
-- `audit_multimodal.py` — Modal fan-out + the shuffle control.
-- `make_event_filmstrip.py` — the precision@10 artifact.
-- `eyekit.py`, `audit_modal.py` — untouched, still the frozen wrist-only path.
+## Artifacts to resume from
+- Labeled clips + verdicts: `~/Documents/Hackathon/clips/`, `clips_recal/` (+ scorecards)
+- wash_dishes scores: `audit_washdishes.parquet`, `audit_wd_recal.parquet`
+- Correction-gate test (the negative result): `scratchpad/test_correction.py`
+- Findings: `VALIDATION_FINDINGS.md`  ·  Slide: `SLIDE.md`

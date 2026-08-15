@@ -225,11 +225,16 @@ checks in `NEXT_DIRECTION.md`.
 - `explore_episode.py` — schema discovery + per-episode diagnostic plots
 - `audit_modal.py` — parallel dataset-wide audit on Modal
 - `validate.py` — weak-label agreement + precision@10 gallery
-- `make_demo_figs.py` — eye diagrams + confidence meter figures
-- `test_synthetic.py` — wrist-only ground-truth smoke test (→ PASS)
-- `test_multimodal.py` — multimodal ground-truth smoke test: verifies the data
-  conventions, and that a synthetic drop flags while a synthetic soap squirt
-  does not (→ PASS)
+- `make_demo_figs.py` — eye diagrams + confidence meter for the slide (reads local
+  zarrs or R2 `s3://` paths)
+- `make_filmstrip.py` — preview-MP4 frames laid over the confidence trace, aligned
+  to timestamp — the actual photographed demo moment
+- `export_annotations.py` — annotations.csv from `segments[].label` (real per-clip
+  text, e.g. "drop orange bowl...") rather than just task_description
+- `local_audit.py` — same scorer as `audit_modal.py`, run sequentially without
+  Modal; good for a few hundred episodes when you want real numbers without a
+  fan-out (e.g. to feed `egosearch.py --demo` with populated signal/success)
+- `test_synthetic.py` — ground-truth smoke test (`python test_synthetic.py` → PASS)
 - `egosearch.py` — quality-aware natural-language search (library + CLI)
 - `search_page.py` — renders the search demo page; engine-parity checked in-browser
 - `test_search.py` — 36 checks on parsing, channels and ranking (`→ PASS`)
