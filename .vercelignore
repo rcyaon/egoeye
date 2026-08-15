@@ -1,0 +1,6 @@
+# Vercel only serves the static demo page; the pipeline runs on Modal.
+*.py
+*.csv
+*.parquet
+__pycache__/
+.venv/
