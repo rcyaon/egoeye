@@ -1,0 +1,20 @@
+# data exports (regenerate from sql_tutorial.ipynb) — 64MB, and these are
+# internal dataset object paths; not for a public repo
+episodes.csv
+annotations.csv
+
+# planning doc
+modal_hack.pdf
+
+# run outputs
+audit_results.parquet
+*.parquet
+explore.png
+eye_diagrams.png
+confidence_meter.png
+
+# python / os
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
