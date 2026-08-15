@@ -1,6 +1,5 @@
 # Deliverables
 * Requested summary slide in `egoeye_slide.pptx.pdf`
-* Demo: https://egoeye.vercel.app/
 <img width="2668" height="1558" alt="image" src="https://github.com/user-attachments/assets/e768ae77-8b13-48a5-a4cb-310e2369ff01" />
 
 
