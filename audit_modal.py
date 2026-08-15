@@ -36,7 +36,7 @@ LEFT_KEY = WRIST_KEY.replace("right.", "left.")  # left-only episodes (human_lef
 
 
 def load_wrist(zarr_path: str):
-    """Return (T,3) wrist positions for one episode.
+    """Return available wrist trajectories keyed by hand for one episode.
 
     Three things the raw zarr will bite you on:
       1. R2, not S3 — s3fs needs the Cloudflare endpoint and region "auto".
@@ -65,16 +65,28 @@ def load_wrist(zarr_path: str):
         mode="r",
     )
 
-    key = WRIST_KEY if WRIST_KEY in root else LEFT_KEY  # human_left_arm has left.* only
-    arr = np.asarray(root[key])
+    def load_key(key: str):
+        arr = np.asarray(root[key])
+        if arr.ndim == 2 and arr.shape[1] > 3 and arr.shape[1] % 3 == 0:
+            arr = arr.reshape(len(arr), -1, 3)   # (T, 63) -> (T, 21, 3)
+        if arr.ndim == 3:
+            arr = arr[:, WRIST_JOINT, :]
+        n = int(root.attrs.get("total_frames", len(arr)))
+        return arr[:n]
 
-    if arr.ndim == 2 and arr.shape[1] > 3 and arr.shape[1] % 3 == 0:
-        arr = arr.reshape(len(arr), -1, 3)   # (T, 63) -> (T, 21, 3)
-    if arr.ndim == 3:
-        arr = arr[:, WRIST_JOINT, :]
+    wrists = {}
+    if WRIST_KEY in root:
+        wrists["right"] = load_key(WRIST_KEY)
+    if LEFT_KEY in root:
+        wrists["left"] = load_key(LEFT_KEY)
+    if not wrists:
+        raise KeyError(f"missing wrist keypoints: expected {WRIST_KEY} and/or {LEFT_KEY}")
+    return wrists
 
-    n = int(root.attrs.get("total_frames", len(arr)))
-    return arr[:n]
+
+def _report_rank(report):
+    score = report.failure_score
+    return float("-inf") if score != score else float(score)
 
 
 # timeout: episode lengths run from 4s to 923s of video, and R2 download
@@ -84,10 +96,36 @@ def load_wrist(zarr_path: str):
 def audit_one(row: dict) -> dict:
     from eyekit import score_episode
     try:
-        xyz = load_wrist(row["zarr_path"])
-        rep = score_episode(str(row["episode_id"]), xyz,
-                            fps=float(row.get("fps", 30.0)))
-        out = rep.to_dict(); out["error"] = ""
+        wrists = load_wrist(row["zarr_path"])
+        reports = {
+            hand: score_episode(
+                str(row["episode_id"]),
+                xyz,
+                fps=float(row.get("fps", 30.0)),
+            )
+            for hand, xyz in wrists.items()
+        }
+        best_hand, rep = max(reports.items(), key=lambda item: _report_rank(item[1]))
+        out = rep.to_dict()
+        out["error"] = ""
+        out["score_hand"] = best_hand
+        left_rep = reports.get("left")
+        right_rep = reports.get("right")
+        out["left_failure_score"] = left_rep.failure_score if left_rep is not None else None
+        out["right_failure_score"] = right_rep.failure_score if right_rep is not None else None
+        out["left_impulse_rate_per_min"] = left_rep.impulse_rate_per_min if left_rep is not None else None
+        out["right_impulse_rate_per_min"] = right_rep.impulse_rate_per_min if right_rep is not None else None
+
+        hand_scores = [r.failure_score for r in reports.values() if r.failure_score == r.failure_score]
+        if len(hand_scores) >= 2:
+            max_score = max(hand_scores)
+            mean_score = sum(hand_scores) / len(hand_scores)
+            agg_score = 0.65 * max_score + 0.35 * mean_score
+            out["failure_score"] = float(agg_score)
+            out["failure_flag"] = bool(agg_score >= 0.60)
+            out["is_bimanual_scored"] = True
+        else:
+            out["is_bimanual_scored"] = False
         return out
     except Exception as e:                    # never let one episode kill the run
         return {"episode_id": str(row.get("episode_id")), "error": repr(e)}

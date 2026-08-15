@@ -6,8 +6,9 @@ Goals, in order:
      and does fold-clothes speed look cyclical?
 
 Usage:
-  python explore_episode.py /path/to/episode.zarr           # inspect schema
-  python explore_episode.py /path/to/episode.zarr --key obs/wrist_pos --fps 30
+    python explore_episode.py /path/to/episode.zarr           # inspect schema
+    python explore_episode.py s3://bucket/path/to/episode.zarr  # inspect remote R2 zarr
+    python explore_episode.py /path/to/episode.zarr --key obs/wrist_pos --fps 30
 
 Data access: follow EgoVerse README (AWS configure step + sync_s3.py with
 --filters aria-fold-clothes) to pull a few episodes locally. Also open the
@@ -33,6 +34,24 @@ def walk_zarr(g, prefix=""):
             print(f"  {path}/")
             walk_zarr(item, path)
 
+
+def open_episode_root(path: str):
+    import os
+    import s3fs
+    import zarr
+
+    if path.startswith("s3://"):
+        endpoint = os.environ.get("R2_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3")
+        fs = s3fs.S3FileSystem(
+            key=os.environ.get("R2_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID"),
+            secret=os.environ.get("R2_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            client_kwargs={"endpoint_url": endpoint, "region_name": "auto"},
+        )
+        store = zarr.storage.FsspecStore(fs, path=path.replace("s3://", "").rstrip("/"))
+        return zarr.open(store, mode="r")
+
+    return zarr.open(path, mode="r")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("path")
@@ -41,8 +60,7 @@ def main():
     ap.add_argument("--joint", type=int, default=0, help="joint index if (T,J,3); MANO wrist is joint 0")
     args = ap.parse_args()
 
-    import zarr
-    root = zarr.open(args.path, mode="r")
+    root = open_episode_root(args.path)
     print(f"== schema of {args.path} ==")
     walk_zarr(root)
 
@@ -58,6 +76,10 @@ def main():
         sys.exit(0)
 
     arr = np.asarray(root[key])
+    n = int(root.attrs.get("total_frames", len(arr)))
+    arr = arr[:n]
+    if arr.ndim == 2 and arr.shape[1] > 3 and arr.shape[1] % 3 == 0:
+        arr = arr.reshape(len(arr), -1, 3)
     if arr.ndim == 3:                      # (T, J, 3) -> pick wrist joint
         arr = arr[:, args.joint, :]
     assert arr.ndim == 2 and arr.shape[1] == 3, f"expected (T,3), got {arr.shape}"
